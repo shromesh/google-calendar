@@ -14,35 +14,37 @@ from slack_sdk.errors import SlackApiError
 def get_tomorrows_earliest_event_start_time(
     service_account_json_str: str, calendar_id: str, timezone: str = "Asia/Tokyo"
 ):
-    """
-    環境変数に格納された "サービスアカウントJSON文字列" を直接使って、
-    GoogleカレンダーAPIから「明日」最初の予定を取得して開始時刻を返す。
-    """
+    # 環境変数から JSON を読み取り、dict化
+    import json
 
-    # 1. 環境変数から JSON 文字列を読み込み → dict に変換
     service_account_info = json.loads(service_account_json_str)
 
-    # 2. dict 情報から Google の資格情報を生成
+    # サービスアカウント認証
     creds = service_account.Credentials.from_service_account_info(
         service_account_info,
         scopes=["https://www.googleapis.com/auth/calendar.readonly"],
     )
-
-    # 3. Calendar API のクライアントを生成
     service = build("calendar", "v3", credentials=creds)
 
-    # 4. 明日の日付の開始と終了を取得
+    # タイムゾーンを生成
     local_tz = pytz.timezone(timezone)
+
+    # 今日と明日を取得
     today = datetime.now(local_tz).date()
     tomorrow = today + timedelta(days=1)
-    start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time())
-    end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time())
 
-    # 取得範囲をISO8601形式に変換
+    # 「明日」の開始・終了を「タイムゾーンつき」で作成
+    start_of_tomorrow_naive = datetime.combine(tomorrow, datetime.min.time())
+    end_of_tomorrow_naive = datetime.combine(tomorrow, datetime.max.time())
+
+    # pytz を使って「アウェア」な datetime にする
+    start_of_tomorrow = local_tz.localize(start_of_tomorrow_naive)
+    end_of_tomorrow = local_tz.localize(end_of_tomorrow_naive)
+
+    # RFC3339形式 (例: 2025-03-06T00:00:00+09:00) で文字列化
     time_min = start_of_tomorrow.isoformat()
     time_max = end_of_tomorrow.isoformat()
 
-    # 5. カレンダーイベントを取得
     events_result = (
         service.events()
         .list(
@@ -59,27 +61,25 @@ def get_tomorrows_earliest_event_start_time(
     if not events:
         return None
 
-    # 6. 最初(一番早い)イベントを取得
+    # 最初のイベント
     first_event = events[0]
     start_time_str = first_event["start"].get(
         "dateTime", first_event["start"].get("date")
     )
 
-    # 7. dateTime or 終日 (date) で分岐してパース
     if "T" in start_time_str:
+        # 例: "2025-03-06T10:00:00+09:00"
         start_time = datetime.fromisoformat(start_time_str)
     else:
+        # 終日 (date形式 "2025-03-06") の場合は 00:00:00+00:00 としてパースし、
+        # その後ローカルタイムに変換
         start_time = datetime.fromisoformat(start_time_str + "T00:00:00+00:00")
 
-    # 8. タイムゾーン変換
     start_time_local = start_time.astimezone(local_tz)
     return start_time_local
 
 
 def post_message_to_slack(token: str, channel: str, message: str):
-    """
-    Slack へメッセージを投稿する
-    """
     client = WebClient(token=token)
     try:
         response = client.chat_postMessage(channel=channel, text=message)
@@ -91,36 +91,25 @@ def post_message_to_slack(token: str, channel: str, message: str):
 if __name__ == "__main__":
     load_dotenv()
 
-    # =============================
-    # 環境変数から必要な情報を取得
-    # =============================
-    # GCP_SERVICE_ACCOUNT_CREDENTIALS に JSON 本体が入っている前提
     service_account_json_str = os.getenv("GCP_SERVICE_ACCOUNT_CREDENTIALS", "")
     if not service_account_json_str:
         raise ValueError(
-            "環境変数 GCP_SERVICE_ACCOUNT_CREDENTIALS が設定されていません。"
+            "環境変数 GCP_SERVICE_ACCOUNT_CREDENTIALS がセットされていません。"
         )
 
-    # カレンダーID, Slackトークンなど
     calendar_id = os.getenv("CALENDAR_ID", "primary")
-    slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "")
     slack_channel = os.getenv("SLACK_CHANNEL", "#general")
     timezone = os.getenv("TIMEZONE", "Asia/Tokyo")
 
-    # =============================
-    # 明日の最初の予定を取得
-    # =============================
     earliest_event_start = get_tomorrows_earliest_event_start_time(
         service_account_json_str=service_account_json_str,
         calendar_id=calendar_id,
         timezone=timezone,
     )
 
-    # =============================
-    # Slack に投稿
-    # =============================
     if earliest_event_start:
-        hour_str = earliest_event_start.strftime("%H時%M分")  # "09時00分" 等
+        hour_str = earliest_event_start.strftime("%H時%M分")
         message = f"明日は {hour_str} にアラームをかけてください。"
     else:
         message = "明日は予定がありません。"
