@@ -2,4 +2,10 @@
 
 gcloud auth application-default login
 
-# ~/.config/gcloud/application_default_credentials.json
+# 認証ファイル
+```
+# 1回目
+client_secret.json
+# 2回目
+token.json
+```
