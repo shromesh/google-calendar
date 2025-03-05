@@ -16,8 +16,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-# dotenv で Slack Token などを読み込む
-# pip install python-dotenv
+# dotenv で Slack Token などを読み込む (pip install python-dotenv)
 from dotenv import load_dotenv
 
 # カレンダー読み取りだけなら readonly で十分
@@ -28,65 +27,55 @@ def get_user_credentials():
     """
     ユーザーとしてOAuth認証を行い、Credentials オブジェクトを返す。
     - 初回: ブラウザで認証フロー
-    - 2回目以降: token.json を再利用
+    - 2回目以降: token.json を再利用 (pickle形式)
     """
     creds = None
-
-    # すでに token.json があれば、そこから読み込む (pickle形式)
     if os.path.exists("token.json"):
         with open("token.json", "rb") as token:
             creds = pickle.load(token)
 
-    # キャッシュが無い or 期限切れ の場合は認証フロー
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            # リフレッシュトークンがあれば更新
             creds.refresh(Request())
         else:
-            # 新規に OAuth フロー開始
-            # client_secret.json は Google Cloud Console で「デスクトップアプリ」などを選択し、
-            # ダウンロードしたファイルを配置したもの。
+            # client_secret.json は Google Cloud Console で「デスクトップアプリ」などの
+            # OAuthクライアントIDを作り、ダウンロードしたファイルを配置してください。
             flow = InstalledAppFlow.from_client_secrets_file(
                 "client_secret.json", SCOPES
             )
             creds = flow.run_local_server(port=0)
-
-        # 認証完了したので token.json に保存
+        # 認証完了したので保存
         with open("token.json", "wb") as token:
             pickle.dump(creds, token)
 
     return creds
 
 
-def get_tomorrows_earliest_event_start_time(service, timezone="Asia/Tokyo"):
+def get_tomorrows_earliest_timed_event(service, timezone="Asia/Tokyo"):
     """
     与えられた Calendar API service (ユーザー認証済み) を使って、
-    明日の最も早い予定開始時刻を返す (なければ None)
+    明日の "終日ではない" (dateTimeあり) イベントの中で一番早い予定を取得。
+    戻り値: (予定名, イベント開始時刻[datetime])  または None
     """
-    # タイムゾーン設定
     local_tz = pytz.timezone(timezone)
 
-    # 今日 + 1日 = 明日
+    # 明日の開始/終了 (ローカルタイム)
     today = dt.now(local_tz).date()
     tomorrow = today + timedelta(days=1)
 
-    # 明日 0:00 と 23:59:59.999... (ローカルタイム) を作成
     start_of_tomorrow_naive = datetime.datetime.combine(
         tomorrow, datetime.datetime.min.time()
     )
     end_of_tomorrow_naive = datetime.datetime.combine(
         tomorrow, datetime.datetime.max.time()
     )
-
-    # pytz でローカルタイムに変換 (アウェアなdatetimeを作成)
     start_of_tomorrow = local_tz.localize(start_of_tomorrow_naive)
     end_of_tomorrow = local_tz.localize(end_of_tomorrow_naive)
 
-    # RFC3339形式で文字列化
-    time_min = start_of_tomorrow.isoformat()
+    time_min = start_of_tomorrow.isoformat()  # 例: "2025-03-07T00:00:00+09:00"
     time_max = end_of_tomorrow.isoformat()
 
-    # "primary" (ログインしたユーザーのメインカレンダー) から、明日のイベントを取得
+    # ログイン中のユーザー(primary)から予定を取得
     events_result = (
         service.events()
         .list(
@@ -98,33 +87,35 @@ def get_tomorrows_earliest_event_start_time(service, timezone="Asia/Tokyo"):
         )
         .execute()
     )
-
     events = events_result.get("items", [])
 
-    if not events:
+    # 終日予定を除外 (start.dateTime があるものだけ残す)
+    timed_events = []
+    for e in events:
+        # e['start'] が 'dateTime' を持つ場合は通常の予定
+        if "dateTime" in e["start"]:
+            timed_events.append(e)
+
+    if not timed_events:
         return None
 
-    # 最初(一番早い)イベントを取り出す
-    first_event = events[0]
-    start_time_str = first_event["start"].get(
-        "dateTime", first_event["start"].get("date")
-    )
+    # 最初(一番早い)予定を取得
+    first_event = timed_events[0]
+    summary = first_event.get("summary", "（無題）")
 
-    # 終日予定の場合は "date" フィールドのみ
-    if "T" in start_time_str:
-        # 例: "2025-03-06T10:00:00+09:00"
-        start_time = dt.fromisoformat(start_time_str)
-    else:
-        # 終日 (yyyy-mm-dd 形式) → 00:00として処理し、UTC扱い→ローカルに変換
-        start_time = dt.fromisoformat(start_time_str + "T00:00:00+00:00")
-
+    # 開始時刻文字列 (例: "2025-03-07T09:00:00+09:00")
+    start_time_str = first_event["start"]["dateTime"]
+    # ISO8601をdatetimeに変換
+    start_time = dt.fromisoformat(start_time_str)
+    # ローカルタイムに変換
     start_time_local = start_time.astimezone(local_tz)
-    return start_time_local
+
+    return (summary, start_time_local)
 
 
 def post_message_to_slack(token, channel, message):
     """
-    Slack にメッセージを投稿する
+    Slack へメッセージを投稿する
     """
     client = WebClient(token=token)
     try:
@@ -149,16 +140,17 @@ def main():
     # 3. 認証済みクレデンシャルで Calendar API Service を作成
     service = build("calendar", "v3", credentials=creds)
 
-    # 4. 明日の最初の予定を取得
-    earliest_event_start = get_tomorrows_earliest_event_start_time(service, timezone)
+    # 4. 明日の最初の "通常予定" (dateTimeあり) を取得
+    event_info = get_tomorrows_earliest_timed_event(service, timezone)
 
-    if earliest_event_start:
-        hour_str = earliest_event_start.strftime("%H時%M分")
-        message = f"明日は {hour_str} にアラームをかけてください。"
-        print(f"明日の最初の予定開始時刻: {earliest_event_start} (ローカルタイム)")
+    if event_info:
+        summary, start_time = event_info
+        start_str = start_time.strftime("%H:%M")
+        message = f"明日の最初の予定は「{summary}」で、開始時刻は {start_str} です。"
+        print(f"明日の最初の通常予定: {summary} ({start_time})")
     else:
-        message = "明日は予定がありません。"
-        print("明日の予定はありません。")
+        message = "明日の終日以外の予定はありません。"
+        print("明日の通常予定はありません。")
 
     # 5. Slackへ投稿
     if slack_token:
