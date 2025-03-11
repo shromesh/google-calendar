@@ -27,7 +27,7 @@ gcloud auth application-default login
 ```
 
 # アカウント
-- AWS(ECR, Lambda, Secrets Manager)
+- AWS(ECR, Lambda, API Gateway, Secrets Manager)
     - prefab-admin
 - GCP(Calendar API, OAuth)
     - yonemoto
