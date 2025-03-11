@@ -6,7 +6,8 @@ gcloud auth application-default login
 # lambdaで実行するときの認証
 - ローカルで`auth.sh`を実行
     - Calendarへのログイントークンの更新とSecrets Managerへのアップロードが行われる
-- lambdaに実行ロールを付与
+- ECRを作成し、push（以下参考）
+- Lambdaを作成し、実行ロールを付与
 ```
 {
   "Effect": "Allow",
@@ -26,17 +27,17 @@ gcloud auth application-default login
 
 # docker
 ```
-# 前提：GUIでECRを作成済み(レポジトリ名：my-lambda-calendar)
-docker build -t my-lambda-calendar:latest .
-docker tag my-lambda-calendar:latest <your_ecr_repo_uri>:latest
-aws ecr get-login-password --region ap-northeast-1 --profile prefab-admin \
-    | docker login --username AWS --password-stdin <your_account_id>.dkr.ecr.ap-northeast-1.amazonaws.com
-docker push <your_ecr_repo_uri>:latest
-```
+# レポジトリ名など
+export IMAGE_NAME=my-lambda-calendar:latest
+export LAMBDA_NAME=my-lambda-calendar
+export ECR_URI=950942770806.dkr.ecr.ap-northeast-1.amazonaws.com/my-lambda-calendar:latest
+export ACCOUNT_ID=950942770806
+export PROFILE=prefab-admin
 
-# test
-```
-docker run -p 9000:8080 my-lambda-calendar:latest
-curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" \
-     -d '{}'
-```
+# x86_64 用イメージをビルド
+docker build --platform=linux/amd64 --pull --no-cache -t $IMAGE_NAME .
+docker tag $IMAGE_NAME $ECR_URI
+aws ecr get-login-password --region ap-northeast-1 --profile $PROFILE \
+    | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com
+docker push $ECR_URI
+aws lambda update-function-code --profile $PROFILE --function-name $LAMBDA_NAME --image-uri $ECR_URI
