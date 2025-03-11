@@ -104,32 +104,21 @@ def is_online_event(event):
 
 def calculate_alarm_times(start_time_local, is_online):
     """
-    オンラインなら開始10分前を1つ、
-    それ以外(オフライン)なら 90分前, 70分前 の2つを返す (ISO8601文字列)
+    オンラインなら開始10分前
+    それ以外(オフライン)なら80分前
     """
     if is_online:
         alarm_time = start_time_local - timedelta(minutes=10)
-        return [alarm_time.isoformat()]
+        return alarm_time.isoformat()
     else:
-        alarm_time1 = start_time_local - timedelta(minutes=90)
-        alarm_time2 = start_time_local - timedelta(minutes=70)
-        return [alarm_time1.isoformat(), alarm_time2.isoformat()]
+        alarm_time = start_time_local - timedelta(minutes=80)
+        return alarm_time.isoformat()
 
 
 def get_orange_events(creds, timezone="Asia/Tokyo"):
     """
     カレンダーAPIで、オレンジ色(colorId=6)かつ「時間あり(dateTime)」のイベントを取得し、
-    オンライン/オフラインでアラーム時刻(10分前 or 70/90分前)を計算して返す。
-
-    - 時刻帯は determine_time_range で指定
-    戻り値: [
-      {
-        "summary": str,
-        "start_time": str,   # ISO8601
-        "alarm_times": [str, ...]
-      },
-      ...
-    ]
+    オンライン/オフラインでアラーム時刻(10分前 or 80分前)を計算して返す。
     """
     local_tz = pytz.timezone(timezone)
     start_dt, end_dt = determine_time_range(timezone=timezone)
@@ -160,13 +149,12 @@ def get_orange_events(creds, timezone="Asia/Tokyo"):
             start_time = dt.fromisoformat(start_time_str).astimezone(local_tz)
 
             online = is_online_event(ev)
-            alarm_times = calculate_alarm_times(start_time, online)
+            alarm_time = calculate_alarm_times(start_time, online)
 
             results.append(
                 {
                     "summary": summary,
-                    "start_time": start_time.isoformat(),
-                    "alarm_times": alarm_times,
+                    "alarm_time": alarm_time,
                 }
             )
 
