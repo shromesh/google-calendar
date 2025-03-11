@@ -1,18 +1,11 @@
 # google-calendar
 
+# CLIにログイン
 gcloud auth application-default login
-
-# 認証ファイル
-```
-# 1回目
-client_secret.json
-# 2回目
-token.json
-```
 
 # lambdaで実行するときの認証
 - ローカルで`auth.sh`を実行
-    - トークンの更新とアップロードが行われる
+    - Calendarへのログイントークンの更新とSecrets Managerへのアップロードが行われる
 
 # アカウント
 - AWS(ECR, Lambda, Secrets Manager)
