@@ -1,81 +1,143 @@
 from __future__ import print_function
 
 import os
+import json
+import base64
 import pickle
 import datetime
 from datetime import datetime as dt, timedelta
+
+import boto3
 import pytz
-import dateutil.parser
 
-# Slack 用
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
-
-# OAuth 用
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 
-# dotenv で Slack Token などを読み込む (pip install python-dotenv)
+# dotenv が必要なら使用（Lambda では不要なら削除してOK）
 from dotenv import load_dotenv
 
-# カレンダー読み取りだけなら readonly で十分
+
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
-def get_user_credentials():
+def load_credentials_from_secrets_manager(secret_name, region_name):
     """
-    ユーザーとしてOAuth認証を行い、Credentials オブジェクトを返す。
-    - 初回: ブラウザで認証フロー
-    - 2回目以降: token.json を再利用 (pickle形式)
+    AWS Secrets Manager からトークン情報を取得し、pickleで Credentials を復元。
+    - SecretString は例として {"token": "base64エンコードしたバイナリ"} の形とする。
+    - もしトークンが期限切れなら creds.refresh() して再保存する。
     """
-    creds = None
-    if os.path.exists("token.json"):
-        with open("token.json", "rb") as token:
-            creds = pickle.load(token)
+    client = boto3.client("secretsmanager", region_name=region_name)
+    response = client.get_secret_value(SecretId=secret_name)
+    secret_string = response["SecretString"]
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # client_secret.json は Google Cloud Console で「デスクトップアプリ」などの
-            # OAuthクライアントIDを作り、ダウンロードしたファイルを配置してください。
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "client_secret.json", SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-        # 認証完了したので保存
-        with open("token.json", "wb") as token:
-            pickle.dump(creds, token)
+    data = json.loads(secret_string)
+    if "token" not in data:
+        raise ValueError(
+            f"Secrets Manager のシークレットに 'token' キーがありません: {data}"
+        )
+
+    # base64→バイナリ→pickle で Credentials を取り出す
+    token_b64 = data["token"]
+    token_bin = base64.b64decode(token_b64)
+    creds = pickle.loads(token_bin)
+
+    # もし期限切れならリフレッシュ
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        # リフレッシュ後のアクセストークンを再保存する例:
+        updated_token_bin = pickle.dumps(creds)
+        updated_token_b64 = base64.b64encode(updated_token_bin).decode("utf-8")
+        data["token"] = updated_token_b64
+        client.put_secret_value(SecretId=secret_name, SecretString=json.dumps(data))
 
     return creds
 
 
-def get_tomorrows_earliest_timed_event(service, timezone="Asia/Tokyo"):
+def determine_time_range(timezone="Asia/Tokyo"):
     """
-    与えられた Calendar API service (ユーザー認証済み) を使って、
-    明日の "終日ではない" (dateTimeあり) イベントの中で一番早い予定を取得。
-    戻り値: (予定名, イベント開始時刻[datetime])  または None
+    現在の時刻が 0:00～18:00 なら「今日の今～今日の23:59:59」、
+    18:00～24:00 なら「明日の0:00:00～明日の23:59:59」 を返す。
+
+    戻り値: (start_dt, end_dt) タイムゾーン付き datetime
     """
     local_tz = pytz.timezone(timezone)
+    now_local = dt.now(local_tz)
 
-    # 明日の開始/終了 (ローカルタイム)
-    today = dt.now(local_tz).date()
-    tomorrow = today + timedelta(days=1)
+    if now_local.hour < 18:
+        # 今日の今から今日の23:59:59 まで
+        start_dt = now_local
+        end_dt = local_tz.localize(
+            datetime.datetime.combine(now_local.date(), datetime.time(23, 59, 59))
+        )
+    else:
+        # 明日の0:00:00 から 明日の23:59:59 まで
+        tomorrow_date = now_local.date() + timedelta(days=1)
+        start_dt = local_tz.localize(
+            datetime.datetime.combine(tomorrow_date, datetime.time(0, 0, 0))
+        )
+        end_dt = local_tz.localize(
+            datetime.datetime.combine(tomorrow_date, datetime.time(23, 59, 59))
+        )
 
-    start_of_tomorrow_naive = datetime.datetime.combine(
-        tomorrow, datetime.datetime.min.time()
-    )
-    end_of_tomorrow_naive = datetime.datetime.combine(
-        tomorrow, datetime.datetime.max.time()
-    )
-    start_of_tomorrow = local_tz.localize(start_of_tomorrow_naive)
-    end_of_tomorrow = local_tz.localize(end_of_tomorrow_naive)
+    return (start_dt, end_dt)
 
-    time_min = start_of_tomorrow.isoformat()  # 例: "2025-03-07T00:00:00+09:00"
-    time_max = end_of_tomorrow.isoformat()
 
-    # ログイン中のユーザー(primary)から予定を取得
+def is_online_event(event):
+    """
+    イベントがオンラインかどうかを判定:
+    - event['conferenceData'] があればオンライン
+    - または description に "meet" や "zoom" が含まれる場合もオンライン
+    """
+    # 1. conferenceData がある場合
+    if "conferenceData" in event:
+        return True
+
+    # 2. description 中に "meet" or "zoom" があればオンラインとみなす
+    desc = event.get("description", "")
+    desc_lower = desc.lower()
+    if "meet" in desc_lower or "zoom" in desc_lower:
+        return True
+
+    return False
+
+
+def calculate_alarm_times(start_time_local, is_online):
+    """
+    オンラインなら開始10分前を1つ、
+    それ以外(オフライン)なら 90分前, 70分前 の2つを返す (ISO8601文字列)
+    """
+    if is_online:
+        alarm_time = start_time_local - timedelta(minutes=10)
+        return [alarm_time.isoformat()]
+    else:
+        alarm_time1 = start_time_local - timedelta(minutes=90)
+        alarm_time2 = start_time_local - timedelta(minutes=70)
+        return [alarm_time1.isoformat(), alarm_time2.isoformat()]
+
+
+def get_orange_events(creds, timezone="Asia/Tokyo"):
+    """
+    カレンダーAPIで、オレンジ色(colorId=6)かつ「時間あり(dateTime)」のイベントを取得し、
+    オンライン/オフラインでアラーム時刻(10分前 or 70/90分前)を計算して返す。
+
+    - 時刻帯は determine_time_range で指定
+    戻り値: [
+      {
+        "summary": str,
+        "start_time": str,   # ISO8601
+        "alarm_times": [str, ...]
+      },
+      ...
+    ]
+    """
+    local_tz = pytz.timezone(timezone)
+    start_dt, end_dt = determine_time_range(timezone=timezone)
+
+    service = build("calendar", "v3", credentials=creds)
+
+    time_min = start_dt.isoformat()
+    time_max = end_dt.isoformat()
     events_result = (
         service.events()
         .list(
@@ -89,75 +151,57 @@ def get_tomorrows_earliest_timed_event(service, timezone="Asia/Tokyo"):
     )
     events = events_result.get("items", [])
 
-    # 終日予定を除外 (start.dateTime があるものだけ残す)
-    timed_events = []
-    for e in events:
-        # e['start'] が 'dateTime' を持つ場合は通常の予定
-        if "dateTime" in e["start"]:
-            timed_events.append(e)
+    results = []
+    for ev in events:
+        # colorId が '6' で、start.dateTime がある(終日でない)イベント
+        if ev.get("colorId") == "6" and "dateTime" in ev["start"]:
+            summary = ev.get("summary", "（無題）")
+            start_time_str = ev["start"]["dateTime"]  # ISO8601
+            start_time = dt.fromisoformat(start_time_str).astimezone(local_tz)
 
-    if not timed_events:
-        return None
+            online = is_online_event(ev)
+            alarm_times = calculate_alarm_times(start_time, online)
 
-    # 最初(一番早い)予定を取得
-    first_event = timed_events[0]
-    summary = first_event.get("summary", "（無題）")
+            results.append(
+                {
+                    "summary": summary,
+                    "start_time": start_time.isoformat(),
+                    "alarm_times": alarm_times,
+                }
+            )
 
-    # 開始時刻文字列 (例: "2025-03-07T09:00:00+09:00")
-    start_time_str = first_event["start"]["dateTime"]
-    # ISO8601をdatetimeに変換
-    start_time = dt.fromisoformat(start_time_str)
-    # ローカルタイムに変換
-    start_time_local = start_time.astimezone(local_tz)
-
-    return (summary, start_time_local)
+    return results
 
 
-def post_message_to_slack(token, channel, message):
+def lambda_handler(event, context):
     """
-    Slack へメッセージを投稿する
+    AWS Lambda のハンドラ
     """
-    client = WebClient(token=token)
-    try:
-        response = client.chat_postMessage(channel=channel, text=message)
-        print("Slack へメッセージを投稿しました。")
-        return response
-    except SlackApiError as e:
-        print(f"Slack へのメッセージ投稿に失敗しました: {e.response['error']}")
-        return None
-
-
-def main():
-    # 1. .env から Slackトークン等を読み込む
+    # dotenv を読み込む場合（ローカルテストで使いたいなら）
     load_dotenv()
-    slack_token = os.getenv("SLACK_BOT_TOKEN", "")
-    slack_channel = os.getenv("SLACK_CHANNEL", "#general")
+
+    # 環境変数から Secrets Manager の情報を取得
+    secret_name = os.getenv("CALENDAR_TOKEN_SECRET_NAME", "my_calendar_token")
+    region_name = os.getenv("AWS_REGION", "ap-northeast-1")
     timezone = os.getenv("TIMEZONE", "Asia/Tokyo")
 
-    # 2. OAuth 認証 (ユーザーとして)
-    creds = get_user_credentials()
+    # Secrets Manager から token.json 相当を読み込み、Credentials を復元
+    creds = load_credentials_from_secrets_manager(secret_name, region_name)
 
-    # 3. 認証済みクレデンシャルで Calendar API Service を作成
-    service = build("calendar", "v3", credentials=creds)
+    # オレンジ色イベントを取得
+    orange_events = get_orange_events(creds, timezone=timezone)
 
-    # 4. 明日の最初の "通常予定" (dateTimeあり) を取得
-    event_info = get_tomorrows_earliest_timed_event(service, timezone)
+    # デバッグ用ログ出力
+    print(f"Found {len(orange_events)} orange events in the specified range.")
+    for ev in orange_events:
+        print(f"- {ev['summary']} @ {ev['start_time']}")
+        print(f"  alarm_times = {ev['alarm_times']}")
 
-    if event_info:
-        summary, start_time = event_info
-        start_str = start_time.strftime("%H:%M")
-        message = f"明日の最初の予定は「{summary}」で、開始時刻は {start_str} です。"
-        print(f"明日の最初の通常予定: {summary} ({start_time})")
-    else:
-        message = "明日の終日以外の予定はありません。"
-        print("明日の通常予定はありません。")
-
-    # 5. Slackへ投稿
-    if slack_token:
-        post_message_to_slack(slack_token, slack_channel, message)
-    else:
-        print("SLACK_BOT_TOKEN が見つかりません。Slack投稿はスキップします。")
+    # 返り値を JSON として返す例
+    return {"statusCode": 200, "body": json.dumps(orange_events, ensure_ascii=False)}
 
 
+# ローカル実行テスト用
 if __name__ == "__main__":
-    main()
+    res = lambda_handler({}, {})
+    print("Result:", res)
