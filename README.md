@@ -4,9 +4,10 @@
 gcloud auth application-default login
 
 # lambdaで実行するときの認証
+- auth.shを開き、前半の変数部分を変更
 - ローカルで`./auth.sh`を実行
     - Calendarへのログイントークンの更新とSecrets Managerへのアップロードが行われる
-- ECRを作成し、push（以下参考）
+- ECRを作成
 - Lambdaを作成し、実行ロールを付与
 ```
 {
@@ -33,4 +34,5 @@ gcloud auth application-default login
     - alarm-automation
 
 # デプロイ
-- `./push.sh`
+- push.shを開き、前半の変数部分を変更
+- `./push.sh`を実行
