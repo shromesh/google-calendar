@@ -6,6 +6,16 @@ gcloud auth application-default login
 # lambdaで実行するときの認証
 - ローカルで`auth.sh`を実行
     - Calendarへのログイントークンの更新とSecrets Managerへのアップロードが行われる
+- lambdaに実行ロールを付与
+```
+{
+  "Effect": "Allow",
+  "Action": [
+    "secretsmanager:GetSecretValue"
+  ],
+  "Resource": "*"
+}
+```
 
 # アカウント
 - AWS(ECR, Lambda, Secrets Manager)
