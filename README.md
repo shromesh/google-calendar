@@ -10,6 +10,6 @@ client_secret.json
 token.json
 ```
 
-# lambda
-- ローカルで`app_local_oauth.py`を実行
-- `token.json`をaws secrets managerにアップロード
+# lambdaで実行するときの認証
+- ローカルで`auth.sh`を実行
+    - トークンの更新とアップロードが行われる

@@ -6,7 +6,7 @@ WORKDIR /var/task
 
 # 必要ファイルをコピー
 COPY requirements.txt ./
-COPY app.py ./
+COPY main.py ./
 
 # Pythonライブラリをインストール (Lambdaの /var/task に)
 RUN pip3 install --upgrade pip && \
