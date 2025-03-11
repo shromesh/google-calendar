@@ -109,10 +109,10 @@ def calculate_alarm_times(start_time_local, is_online):
     """
     if is_online:
         alarm_time = start_time_local - timedelta(minutes=10)
-        return alarm_time.isoformat()
+        return alarm_time.strftime("%H:%M")
     else:
         alarm_time = start_time_local - timedelta(minutes=80)
-        return alarm_time.isoformat()
+        return alarm_time.strftime("%H:%M")
 
 
 def get_orange_events(creds, timezone="Asia/Tokyo"):
@@ -182,8 +182,8 @@ def lambda_handler(event, context):
     # デバッグ用ログ出力
     print(f"Found {len(orange_events)} orange events in the specified range.")
     for ev in orange_events:
-        print(f"- {ev['summary']} @ {ev['start_time']}")
-        print(f"  alarm_times = {ev['alarm_times']}")
+        print(f"- {ev['summary']}")
+        print(f"  alarm_time = {ev['alarm_time']}")
 
     # 返り値を JSON として返す例
     return json.dumps(orange_events, ensure_ascii=False)

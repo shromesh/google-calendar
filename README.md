@@ -36,3 +36,10 @@ gcloud auth application-default login
 # デプロイ
 - push.shを開き、前半の変数部分を変更
 - `./push.sh`を実行
+
+# ローカル実行
+```
+export AWS_PROFILE=prefab-admin
+source .venv/bin/activate
+python main.py
+```
