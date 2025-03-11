@@ -13,3 +13,10 @@ token.json
 # lambdaで実行するときの認証
 - ローカルで`auth.sh`を実行
     - トークンの更新とアップロードが行われる
+
+# アカウント
+- AWS(lambda, secrets manager)
+    - prefab-admin
+- GCP(calendar api, oauth)
+    - yonemoto
+    - alarm-automation

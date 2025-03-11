@@ -27,7 +27,8 @@ def load_credentials_from_secrets_manager(secret_name, region_name):
     - SecretString は例として {"token": "base64エンコードしたバイナリ"} の形とする。
     - もしトークンが期限切れなら creds.refresh() して再保存する。
     """
-    client = boto3.client("secretsmanager", region_name=region_name)
+    session = boto3.Session(profile_name="prefab-admin")
+    client = session.client("secretsmanager", region_name=region_name)
     response = client.get_secret_value(SecretId=secret_name)
     secret_string = response["SecretString"]
 

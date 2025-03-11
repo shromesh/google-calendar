@@ -8,9 +8,9 @@ WORKDIR /var/task
 COPY requirements.txt ./
 COPY main.py ./
 
-# Pythonライブラリをインストール (Lambdaの /var/task に)
+# Pythonライブラリをインストール
 RUN pip3 install --upgrade pip && \
     pip3 install -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
 # Lambda 実行時に呼び出されるハンドラを指定
-CMD ["app.lambda_handler"]
+CMD ["main.lambda_handler"]
