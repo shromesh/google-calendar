@@ -198,7 +198,7 @@ def lambda_handler(event, context):
         print(f"  alarm_times = {ev['alarm_times']}")
 
     # 返り値を JSON として返す例
-    return {"statusCode": 200, "body": json.dumps(orange_events, ensure_ascii=False)}
+    return json.dumps(orange_events, ensure_ascii=False)
 
 
 # ローカル実行テスト用
