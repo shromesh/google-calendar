@@ -15,19 +15,20 @@ token.json
     - トークンの更新とアップロードが行われる
 
 # アカウント
-- AWS(lambda, secrets manager)
+- AWS(ECR, Lambda, Secrets Manager)
     - prefab-admin
-- GCP(calendar api, oauth)
+- GCP(Calendar API, OAuth)
     - yonemoto
     - alarm-automation
 
 # docker
 ```
-# 前提：GUIでECRを作成済み
+# 前提：GUIでECRを作成済み(レポジトリ名：my-lambda-calendar)
 docker build -t my-lambda-calendar:latest .
+docker tag my-lambda-calendar:latest <your_ecr_repo_uri>:latest
 aws ecr get-login-password --region ap-northeast-1 --profile prefab-admin \
     | docker login --username AWS --password-stdin <your_account_id>.dkr.ecr.ap-northeast-1.amazonaws.com
-
+docker push <your_ecr_repo_uri>:latest
 ```
 
 # test

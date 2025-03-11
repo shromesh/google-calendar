@@ -29,4 +29,4 @@ s3transfer==0.11.4
 six==1.17.0
 slack_sdk==3.34.0
 uritemplate==4.1.1
-urllib3==2.3.0
+urllib3
